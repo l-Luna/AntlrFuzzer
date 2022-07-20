@@ -16,6 +16,7 @@ import java.util.stream.Collectors;
 public class Main{
 	
 	private static final Random rng = new Random();
+	public static final int MAX_DEPTH = 25;
 	
 	private static final String[] CHAR_GROUPS = {
 			"abcdefghijklmnopqrstuvwxyz",
@@ -59,18 +60,20 @@ public class Main{
 	
 	public static String generate(Grammar g){
 		Rule root = g.getRule(0);
-		return visitRule(root, g);
+		return visitRule(root, g, 0);
 	}
 	
 	// generation from rules
 	
-	public static String astNodeRec(Object child, Grammar g){
+	public static String astNodeRec(Object child, Grammar g, int depth){
+		if(depth >= MAX_DEPTH)
+			return "NEVERMIND";
 		try{
 			return switch(child){
 				case GrammarAST gr && gr.getClass() == GrammarAST.class -> {
 					// we have to rely on name info here
 					if(gr.toString().equals("SET"))
-						yield astNodeRec(random(gr.getChildrenAsArray()), g);
+						yield astNodeRec(random(gr.getChildrenAsArray()), g, depth + 1);
 					if(gr.toString().equals("="))
 						yield "";
 					throw new IllegalStateException("Unexpected grammar node: " + gr);
@@ -79,12 +82,12 @@ public class Main{
 				case RuleRefAST ruleRef -> {
 					String name = ruleRef.toString(); // yeah
 					Rule rule = g.getRule(name);
-					yield visitRule(rule, g);
+					yield visitRule(rule, g, depth + 1);
 				}
-				case OptionalBlockAST opt -> visitOptional(opt, g);
-				case BlockAST block -> fromAltAst((AltAST)block.getChild(0), g);
-				case StarBlockAST star -> visitStar(star, g);
-				case PlusBlockAST pls -> visitPlus(pls, g);
+				case OptionalBlockAST opt -> visitOptional(opt, g, depth + 1);
+				case BlockAST block -> fromAltAst((AltAST)block.getChild(0), g, depth + 1);
+				case StarBlockAST star -> visitStar(star, g, depth + 1);
+				case PlusBlockAST pls -> visitPlus(pls, g, depth + 1);
 				case ActionAST ignored -> "";
 				default -> throw new IllegalStateException("Unexpected value: " + child.getClass());
 			};
@@ -93,49 +96,54 @@ public class Main{
 		}
 	}
 	
-	public static String visitOptional(OptionalBlockAST opt, Grammar g){
+	public static String visitOptional(OptionalBlockAST opt, Grammar g, int depth){
 		if(rng.nextBoolean())
 			return "";
-		return astNodeRec(opt.getChild(0), g);
+		return astNodeRec(opt.getChild(0), g, depth);
 	}
 	
-	public static String visitPlus(PlusBlockAST pls, Grammar g){
+	public static String visitPlus(PlusBlockAST pls, Grammar g, int depth){
 		int amnt = rng.nextInt(2) + 1;
 		StringBuilder stringBuilder = new StringBuilder();
 		for(int i = 0; i < amnt; i++){
 			if(i != 0)
 				stringBuilder.append(" ");
-			stringBuilder.append(astNodeRec(pls.getChild(0), g));
+			stringBuilder.append(astNodeRec(pls.getChild(0), g, depth));
 		}
 		return stringBuilder.toString();
 	}
 	
-	public static String visitStar(StarBlockAST star, Grammar g){
+	public static String visitStar(StarBlockAST star, Grammar g, int depth){
 		int amnt = rng.nextInt(3);
 		StringBuilder stringBuilder = new StringBuilder();
 		for(int i = 0; i < amnt; i++){
 			if(i != 0)
 				stringBuilder.append(" ");
-			stringBuilder.append(astNodeRec(star.getChild(0), g));
+			stringBuilder.append(astNodeRec(star.getChild(0), g, depth));
 		}
 		return stringBuilder.toString();
 	}
 	
-	public static String visitRule(Rule rule, Grammar g){
+	public static String visitRule(Rule rule, Grammar g, int depth){
 		Alternative[] alts = rule.alt;
 		Alternative toPick = alts[1 + rng.nextInt(alts.length - 1)];
-		return fromAltAst(toPick.ast, g);
+		return fromAltAst(toPick.ast, g, depth);
 	}
 	
-	public static String fromAltAst(AltAST toPick, Grammar g){
-		return toPick.getChildren().stream().map(child -> astNodeRec(child, g)).collect(Collectors.joining(" "));
+	public static String fromAltAst(AltAST toPick, Grammar g, int depth){
+		return toPick.getChildren().stream().map(child -> astNodeRec(child, g, depth)).collect(Collectors.joining(" "));
 	}
 	
 	// generation from tokens/terminals
 	// TODO: dedup lol
 	
 	public static String visitToken(String rulename, Grammar g){
-		Alternative[] alts = g.getRule(rulename).alt;
+		if(rulename.equals("EOF"))
+			return "\n";
+		Rule rule = g.getRule(rulename);
+		if(rule == null)
+			throw new NullPointerException("Missing rule " + rulename + " from " + Arrays.toString(g.getRuleNames()));
+		Alternative[] alts = rule.alt;
 		Alternative toPick = alts[1 + rng.nextInt(alts.length - 1)];
 		return toPick.ast.getChildren().stream().map(x -> terminalNodeRec(x, g)).collect(Collectors.joining());
 	}
@@ -143,7 +151,11 @@ public class Main{
 	public static String terminalNodeRec(Object child, Grammar g){
 		return switch(child){
 			case TerminalAST t -> {
-				String tt = t.toString(); yield tt.substring(1, tt.length() - 1);
+				if(t.toString().startsWith("'") && t.toString().endsWith("'")){
+					String tt = t.toString();
+					yield tt.substring(1, tt.length() - 1);
+				}
+				yield visitToken(t.toString(), g);
 			}
 			case OptionalBlockAST opt -> visitOptionalTerminal(opt, g);
 			case PlusBlockAST pls -> visitPlusTerminal(pls, g);
@@ -153,6 +165,7 @@ public class Main{
 					.map(x -> terminalNodeRec(x, g))
 					.collect(Collectors.joining());
 			case GrammarAST gr && gr.getClass() == GrammarAST.class -> visitOtherGrammarTerminal(gr, g);
+			case NotAST ignored -> ""; // its not there
 			default -> throw new IllegalStateException("o: " + child.getClass().getName());
 		};
 	}
