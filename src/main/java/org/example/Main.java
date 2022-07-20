@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 public class Main{
 	
 	private static final Random rng = new Random();
-	public static final int MAX_DEPTH = 25;
+	public static final int MAX_DEPTH = 30;
 	
 	private static final String[] CHAR_GROUPS = {
 			"abcdefghijklmnopqrstuvwxyz",
@@ -67,7 +67,7 @@ public class Main{
 	
 	public static String astNodeRec(Object child, Grammar g, int depth){
 		if(depth >= MAX_DEPTH)
-			return "NEVERMIND";
+			return "~";
 		try{
 			return switch(child){
 				case GrammarAST gr && gr.getClass() == GrammarAST.class -> {
@@ -165,7 +165,7 @@ public class Main{
 					.map(x -> terminalNodeRec(x, g))
 					.collect(Collectors.joining());
 			case GrammarAST gr && gr.getClass() == GrammarAST.class -> visitOtherGrammarTerminal(gr, g);
-			case NotAST ignored -> ""; // its not there
+			case NotAST ignored -> ""; // it's not there
 			default -> throw new IllegalStateException("o: " + child.getClass().getName());
 		};
 	}
