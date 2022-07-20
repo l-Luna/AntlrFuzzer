@@ -7,12 +7,23 @@ import org.antlr.v4.tool.Grammar;
 import org.antlr.v4.tool.Rule;
 import org.antlr.v4.tool.ast.*;
 
-import java.util.Random;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class Main{
 	
 	private static final Random rng = new Random();
+	
+	private static final String[] CHAR_GROUPS = {
+			"abcdefghijklmnopqrstuvwxyz",
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			"0123456789"
+	};
+	private static final List<String> ALL_CHARS =
+			Arrays.stream(CHAR_GROUPS)
+					.flatMapToInt(String::chars)
+					.mapToObj(x -> String.valueOf((char)x))
+					.toList();
 	
 	public static void main(String[] args){
 		// 1. load & parse the antlr grammar
@@ -23,19 +34,21 @@ public class Main{
 		var g = antlrGrammar("""
 				grammar bad;
 				
-				root: HI b? x;
+				root: HI b? x END;
 				b: BYE?;
 				x: A | B B;
 				
 				HI: 'hi';
 				BYE: 'bye';
-				A: 'op A';
-				B: 'op B';
+				A: 'opA';
+				B: 'opB';
+				END: 'o'+ 'u'? [0-9]* [A-Za-z];
 				WS: [ \n\t] -> channel(HIDDEN);
 				""");
 		new SemanticPipeline(g).process();
 		
-		System.out.println(generate(g));
+		for(int i = 0; i < 10; i++)
+			System.out.println(generate(g));
 	}
 	
 	public static Grammar antlrGrammar(String grammar){
@@ -51,9 +64,15 @@ public class Main{
 		return visitRule(root, g);
 	}
 	
-	public static String visitAstNode(Object child, Grammar g){
+	// generation from rules
+	
+	public static String astNodeRec(Object child, Grammar g){
 		return switch(child){
-			case TerminalAST terminal -> visitToken();
+			case TerminalAST terminal -> {
+				String name = terminal.toString();
+				Rule rule = g.getRule(name);
+				yield visitToken(rule, g);
+			}
 			case RuleRefAST ruleRef -> {
 				String name = ruleRef.toString(); // yeah
 				Rule rule = g.getRule(name);
@@ -68,22 +87,117 @@ public class Main{
 	public static String visitOptional(OptionalBlockAST opt, Grammar g){
 		if(rng.nextBoolean())
 			return "";
-		System.out.println(opt.getChildren().stream().map(x -> x.getClass().getName()).collect(Collectors.joining(", ")));
-		return visitAstNode(opt.getChild(0), g);
+		return astNodeRec(opt.getChild(0), g);
 	}
 	
 	public static String visitRule(Rule rule, Grammar g){
-		System.out.println(rule.getClass());
 		Alternative[] alts = rule.alt;
 		Alternative toPick = alts[1 + rng.nextInt(alts.length - 1)];
 		return fromAltAst(toPick.ast, g);
 	}
 	
 	public static String fromAltAst(AltAST toPick, Grammar g){
-		return toPick.getChildren().stream().map(child -> visitAstNode(child, g)).collect(Collectors.joining(" "));
+		return toPick.getChildren().stream().map(child -> astNodeRec(child, g)).collect(Collectors.joining(" "));
 	}
 	
-	public static String visitToken(){
-		return "T";
+	// generation from tokens/terminals
+	// TODO: dedup lol
+	
+	public static String visitToken(Rule rule, Grammar g){
+		Alternative[] alts = rule.alt;
+		Alternative toPick = alts[1 + rng.nextInt(alts.length - 1)];
+		return toPick.ast.getChildren().stream().map(x -> terminalNodeRec(x, g)).collect(Collectors.joining());
+	}
+	
+	public static String terminalNodeRec(Object child, Grammar g){
+		return switch(child){
+			case TerminalAST t -> {
+				String tt = t.toString(); yield tt.substring(1, tt.length() - 1);
+			}
+			case OptionalBlockAST opt -> visitOptionalTerminal(opt, g);
+			case PlusBlockAST pls -> visitPlusTerminal(pls, g);
+			case StarBlockAST star -> visitStarTerminal(star, g);
+			case BlockAST block -> block.getChildren().stream()
+					.flatMap(x -> ((AltAST)x).getChildren().stream())
+					.map(x -> terminalNodeRec(x, g))
+					.collect(Collectors.joining());
+			case GrammarAST gr && gr.getClass() == GrammarAST.class -> visitOtherGrammarTerminal(gr, g);
+			default -> throw new IllegalStateException("o: " + child.getClass().getName());
+		};
+	}
+	
+	public static String visitOptionalTerminal(OptionalBlockAST opt, Grammar g){
+		if(rng.nextBoolean())
+			return "";
+		return terminalNodeRec(opt.getChild(0), g);
+	}
+	
+	public static String visitPlusTerminal(PlusBlockAST pls, Grammar g){
+		int amnt = rng.nextInt(5) + 1;
+		StringBuilder stringBuilder = new StringBuilder();
+		for(int i = 0; i < amnt; i++){
+			stringBuilder.append(terminalNodeRec(pls.getChild(0), g));
+		}
+		return stringBuilder.toString();
+	}
+	
+	public static String visitStarTerminal(StarBlockAST star, Grammar g){
+		int amnt = rng.nextInt(6);
+		StringBuilder stringBuilder = new StringBuilder();
+		for(int i = 0; i < amnt; i++){
+			stringBuilder.append(terminalNodeRec(star.getChild(0), g));
+		}
+		return stringBuilder.toString();
+	}
+	
+	public static String visitOtherGrammarTerminal(GrammarAST gr, Grammar g){
+		// always character groups?
+		String text = gr.toString();
+		if(!(text.startsWith("[") && text.endsWith("]")))
+			throw new IllegalStateException();
+		text = text.substring(1, text.length() - 1);
+		
+		boolean invert = text.startsWith("^");
+		if(invert)
+			text = text.substring(1);
+		
+		Set<String> allowed = new HashSet<>(text.length());
+		Character last = null;
+		boolean escaped = false, grouping = false;
+		for(char c : text.toCharArray()){
+			if(escaped)
+				allowed.add(String.valueOf(c));
+			else if(c == '\\')
+				escaped = true;
+			else if(c == '-'){
+				if(last == null)
+					throw new IllegalArgumentException();
+				grouping = true;
+			}else{
+				if(grouping){
+					// last must be nonnull or grouping would have thrown
+					for(String group : CHAR_GROUPS){
+						int start = group.indexOf(last.toString()), end = group.indexOf(String.valueOf(c));
+						if(start != -1 && end != -1)
+							allowed.addAll(group.substring(start, end + 1).chars().mapToObj(x -> String.valueOf((char)x)).toList());
+					}
+				}
+				last = c;
+				allowed.add(String.valueOf(c));
+			}
+		}
+		
+		if(invert){
+			var all = new HashSet<String>(ALL_CHARS.size() - allowed.size());
+			all.addAll(ALL_CHARS);
+			all.removeAll(allowed);
+			allowed = all;
+		}
+		
+		return random(allowed.toArray(new String[0]));
+	}
+	
+	private static <T> T random(T[] from){
+		return from[rng.nextInt(from.length)];
 	}
 }
