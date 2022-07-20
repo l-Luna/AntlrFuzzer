@@ -7,6 +7,9 @@ import org.antlr.v4.tool.Grammar;
 import org.antlr.v4.tool.Rule;
 import org.antlr.v4.tool.ast.*;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -26,25 +29,20 @@ public class Main{
 					.toList();
 	
 	public static void main(String[] args){
+		
+		Path in = Path.of(args[0]).toAbsolutePath().normalize();
+		String text;
+		try{
+			text = Files.readString(in);
+		}catch(IOException e){
+			throw new RuntimeException(e);
+		}
 		// 1. load & parse the antlr grammar
 		// 2. walk the praise tree...
 		// 3. at every rule, select a random alternative (or token if exceeding max depth)
 		// 4. at every token, generate a matching piece of text
 		// for now, assume all languages are space delimited
-		var g = antlrGrammar("""
-				grammar bad;
-				
-				root: HI b? x END;
-				b: BYE?;
-				x: A | B B;
-				
-				HI: 'hi';
-				BYE: 'bye';
-				A: 'opA';
-				B: 'opB';
-				END: 'o'+ 'u'? [0-9]* [A-Za-z];
-				WS: [ \n\t] -> channel(HIDDEN);
-				""");
+		var g = antlrGrammar(text);
 		new SemanticPipeline(g).process();
 		
 		for(int i = 0; i < 10; i++)
@@ -67,27 +65,60 @@ public class Main{
 	// generation from rules
 	
 	public static String astNodeRec(Object child, Grammar g){
-		return switch(child){
-			case TerminalAST terminal -> {
-				String name = terminal.toString();
-				Rule rule = g.getRule(name);
-				yield visitToken(rule, g);
-			}
-			case RuleRefAST ruleRef -> {
-				String name = ruleRef.toString(); // yeah
-				Rule rule = g.getRule(name);
-				yield visitRule(rule, g);
-			}
-			case OptionalBlockAST opt -> visitOptional(opt, g);
-			case BlockAST block -> fromAltAst((AltAST)block.getChild(0), g);
-			default -> throw new IllegalStateException("Unexpected value: " + child.getClass());
-		};
+		try{
+			return switch(child){
+				case GrammarAST gr && gr.getClass() == GrammarAST.class -> {
+					// we have to rely on name info here
+					if(gr.toString().equals("SET"))
+						yield astNodeRec(random(gr.getChildrenAsArray()), g);
+					if(gr.toString().equals("="))
+						yield "";
+					throw new IllegalStateException("Unexpected grammar node: " + gr);
+				}
+				case TerminalAST terminal -> visitToken(terminal.toString(), g.getImplicitLexer());
+				case RuleRefAST ruleRef -> {
+					String name = ruleRef.toString(); // yeah
+					Rule rule = g.getRule(name);
+					yield visitRule(rule, g);
+				}
+				case OptionalBlockAST opt -> visitOptional(opt, g);
+				case BlockAST block -> fromAltAst((AltAST)block.getChild(0), g);
+				case StarBlockAST star -> visitStar(star, g);
+				case PlusBlockAST pls -> visitPlus(pls, g);
+				case ActionAST ignored -> "";
+				default -> throw new IllegalStateException("Unexpected value: " + child.getClass());
+			};
+		}catch(StackOverflowError soe){
+			return "OOPS";
+		}
 	}
 	
 	public static String visitOptional(OptionalBlockAST opt, Grammar g){
 		if(rng.nextBoolean())
 			return "";
 		return astNodeRec(opt.getChild(0), g);
+	}
+	
+	public static String visitPlus(PlusBlockAST pls, Grammar g){
+		int amnt = rng.nextInt(2) + 1;
+		StringBuilder stringBuilder = new StringBuilder();
+		for(int i = 0; i < amnt; i++){
+			if(i != 0)
+				stringBuilder.append(" ");
+			stringBuilder.append(astNodeRec(pls.getChild(0), g));
+		}
+		return stringBuilder.toString();
+	}
+	
+	public static String visitStar(StarBlockAST star, Grammar g){
+		int amnt = rng.nextInt(3);
+		StringBuilder stringBuilder = new StringBuilder();
+		for(int i = 0; i < amnt; i++){
+			if(i != 0)
+				stringBuilder.append(" ");
+			stringBuilder.append(astNodeRec(star.getChild(0), g));
+		}
+		return stringBuilder.toString();
 	}
 	
 	public static String visitRule(Rule rule, Grammar g){
@@ -103,8 +134,8 @@ public class Main{
 	// generation from tokens/terminals
 	// TODO: dedup lol
 	
-	public static String visitToken(Rule rule, Grammar g){
-		Alternative[] alts = rule.alt;
+	public static String visitToken(String rulename, Grammar g){
+		Alternative[] alts = g.getRule(rulename).alt;
 		Alternative toPick = alts[1 + rng.nextInt(alts.length - 1)];
 		return toPick.ast.getChildren().stream().map(x -> terminalNodeRec(x, g)).collect(Collectors.joining());
 	}
